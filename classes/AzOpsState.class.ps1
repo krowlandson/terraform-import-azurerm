@@ -36,7 +36,7 @@ class AzOpsProviders {
     [Release]$Release
 
     # Static properties
-    hidden static [AzOpsProviders[]]$Cache = @()
+    hidden static [AzOpsProviders[]]$Cache
     hidden static [String]$ProvidersApiVersion = "2020-06-01"
 
     # Default empty constructor
@@ -156,6 +156,18 @@ class AzOpsProviders {
         return [AzOpsProviders]::Cache | Where-Object -Property Release -EQ $Release
     }
 
+    # Static method to show all entries in Cache matching the specified type using default stable release type
+    static [AzOpsProviders[]] SearchCache([String]$Type) {
+        return [AzOpsProviders]::SearchCache($Type, "stable")
+    }
+
+    # Static method to show all entries in Cache matching the specified type using the specified release type
+    static [AzOpsProviders[]] SearchCache([String]$Type, [Release]$Release) {
+        return [AzOpsProviders]::Cache `
+        | Where-Object -Property Type -EQ $Type `
+        | Where-Object -Property Release -EQ $Release
+    }
+
     # Static method to clear all entries from Cache
     static [Void] ClearCache() {
         [AzOpsProviders]::Cache = @()
@@ -172,6 +184,7 @@ class AzOpsState {
     [String]$Type
     [String]$Name
     [Object]$Properties
+    [Object]$ExtendedProperties
     # [String]$Location
     # [String]$Tags
     # [Object]$Raw
@@ -184,10 +197,11 @@ class AzOpsState {
     [String]$ResourcePath
 
     # Static properties
-    static [AzOpsState[]]$Cache = @()
+    static [AzOpsState[]]$Cache
 
     # Hidden class properties
     # hidden [Boolean]$UsingCache = $false
+    hidden static [String[]]$DefaultProperties = "Id", "Type", "Name", "Properties"
 
     # Regex patterns for use within methods
     hidden static [Regex]$RegexBeforeLastForwardSlash = "(?i)^.*(?=\/)"
@@ -195,6 +209,7 @@ class AzOpsState {
     hidden static [Regex]$RegexProviderTypeFromId = "(?i)(?<=\/providers\/)(?!.*\/providers\/)[^\/]+\/[\w-]+"
     hidden static [Regex]$RegexIsSubscription = "(?i)(\/subscriptions)(?!\/.*\/)"
     hidden static [Regex]$RegexIsResourceGroup = "(?i)(\/resourceGroups)(?!\/.*\/)"
+    hidden static [Regex]$RegexIsResource = "(?i)(\/resources)(?!\/.*\/)"
 
     hidden [PSCustomObject]$SupportedProviders = @{
         GetChildrenByType = @(
@@ -215,8 +230,8 @@ class AzOpsState {
     AzOpsState([String]$Id) {
         if ([AzOpsState]::InCache($Id)) {
             Write-Verbose "Returning AzOpsState from cache for [$Id]"
-            $private:DiscoveredResource = [AzOpsState]::ShowCache($Id)
-            $this.Initialize($private:DiscoveredResource, $true)
+            $private:CachedResource = [AzOpsState]::SearchCache($Id)
+            $this.Initialize($private:CachedResource, $true)
         }
         else {
             $this.Update($Id)
@@ -225,53 +240,26 @@ class AzOpsState {
 
     # Default constructor with Resource Id and IgnoreCache input
     # Uses Update() method to auto-populate from Resource Id
-    # Ignores Cache for Resource Id only (parent and child resources
-    # still pulled from cache if present)
+    # Ignores Cache for Resource Id only (parent and child resources still pulled from cache if present)
     AzOpsState([String]$Id, [SkipCache]$SkipCache) {
         $this.Update($Id)
     }
 
-    # Default constructor to generate [AzOpsState] from output of Get-AzRestMethod
-    # When processing PSHttpResponse inputs, first get the content from the request
-    # Then check whether the content is valid Json (as string) before converting to PSCustomObject
-    # AzOpsState([Microsoft.Azure.Commands.Profile.Models.PSHttpResponse]$PSHttpResponse) {
-    #     $PSHttpResponseContentType = $PSHttpResponse.Content.GetType().Name
-    #     if (($PSHttpResponseContentType -eq "String") -and ($PSHttpResponse.Content | Test-Json)) {
-    #         $PSHttpResponseContent = $PSHttpResponse.Content | ConvertFrom-Json
-    #     }
-    #     else {
-    #         Write-Error "Unknown content type in PSHttpResponse."
-    #         break
-    #     }
-
-    #     if ($PSHttpResponseContent.Count -eq 1) {
-    #         $this.Id = $PSHttpResponseContent.Id
-    #         $this.Type = $PSHttpResponseContent.Type
-    #         $this.Name = $PSHttpResponseContent.Name
-    #         $this.Properties = $PSHttpResponseContent.Properties
-    #         $this.Initialize()
-    #     }
-    #     elseif ($PSHttpResponseContent.Count -gt 1) {
-    #         Write-Error "PSHttpResponse content count exceeded 1: $($PSHttpResponseContent.Count)"
-    #         break
-    #     }
-    # }
-
     AzOpsState([PSCustomObject]$PSCustomObject) {
-        foreach ($property in $this.psobject.properties.Name) {
+        foreach ($property in [AzOpsState]::DefaultProperties) {
             $this.$property = $PSCustomObject.$property
         }
         $this.Initialize()
     }
 
-    # AzOpsState([AzOpsState]$AzOpsState) {
-    #     foreach ($property in $this.psobject.properties.Name) {
-    #         $this.$property = $AzOpsState.$property
-    #     }
-    #     $this.Initialize()
-    # }
+    AzOpsState([AzOpsState]$AzOpsState) {
+        foreach ($property in [AzOpsState]::DefaultProperties) {
+            $this.$property = $AzOpsState.$property
+        }
+        $this.Initialize()
+    }
 
-    Initialize() {
+    [Void] Initialize() {
         # Used to set values on variables which require internal methods
         $this.SetProvider()
         $this.SetChildren()
@@ -284,36 +272,53 @@ class AzOpsState {
         }
     }
 
-    Initialize([AzOpsState]$AzOpsState) {
-        $this.Initialize($AzOpsState, $false)
-    }
+    # [Void] Initialize([AzOpsState]$AzOpsState) {
+    #     $this.Initialize($AzOpsState, $false)
+    # }
 
-    Initialize([AzOpsState]$AzOpsState, [Boolean]$UsingCache) {
-        # Using a foreach loop to set all properties dynamically
-        foreach ($property in $this.psobject.properties.Name) {
-            $this.$property = $AzOpsState.$property
-        }
-        if (-not $UsingCache) {
-            $this.Initialize()
-        }  
-    }
+    # [Void] Initialize([AzOpsState]$AzOpsState, [Boolean]$UsingCache) {
+    #     # Using a foreach loop to set all properties dynamically
+    #     if ($UsingCache) {
+    #         foreach ($property in $this.psobject.Properties.Name) {
+    #             $this.$property = $AzOpsState.$property
+    #         }    
+    #     }
+    #     else {
+    #         $this.SetDefaultProperties($AzOpsState)    
+    #         $this.Initialize()
+    #     }  
+    # }
 
-    Initialize([PsCustomObject]$PsCustomObject) {
+    [Void] Initialize([PsCustomObject]$PsCustomObject) {
         $this.Initialize($PsCustomObject, $false)
     }
 
-    Initialize([PsCustomObject]$PsCustomObject, [Boolean]$UsingCache) {
+    [Void] Initialize([PsCustomObject]$PsCustomObject, [Boolean]$UsingCache) {
         # Using a foreach loop to set all properties dynamically
-        foreach ($property in $this.psobject.properties.Name) {
-            $this.$property = $PsCustomObject.$property
+        if ($UsingCache) {
+            foreach ($property in $this.psobject.Properties.Name) {
+                $this.$property = $PsCustomObject.$property
+            }    
         }
-        if (-not $UsingCache) {
+        else {
+            $this.SetDefaultProperties($PsCustomObject)    
             $this.Initialize()
         }  
     }
 
+    # [Void] Initialize([PsCustomObject]$PsCustomObject, [Boolean]$UsingCache) {
+    #     $this.SetDefaultProperties($PsCustomObject)
+    #     # Using a foreach loop to set all properties dynamically
+    #     # foreach ($property in [AzOpsState]::DefaultProperties) {
+    #     #     $this.$property = $PsCustomObject.$property
+    #     # }
+    #     if (-not $UsingCache) {
+    #         $this.Initialize()
+    #     }  
+    # }
+
     # Update method used to update existing [AzOpsState] object using the existing Resource Id
-    Update() {
+    [Void] Update() {
         if ($this.Id) {
             $this.Update($this.Id)            
         }
@@ -323,92 +328,55 @@ class AzOpsState {
     }
 
     # Update method used to update existing [AzOpsState] object using the provided Resource Id
-    # foreach loop is used to allow creation of new [AzOpsState] objects for a specific
-    # Resource Type where multiple items may be returned
-    # e.g. "/subscriptions", "/resourceGroups", etc.
-    # IMPROVEMENT - need to investigate whether foreach loop works with multiple resources in scope of Id
-    Update([String]$Id) {
+    # IMPROVEMENT - need to investigate how to handle multiple resources in scope of Id
+    [Void] Update([String]$Id) {
         $private:GetAzConfig = [AzOpsState]::GetAzConfig($Id)
-        foreach ($private:AzConfig in $private:GetAzConfig) {
-            $NewAzOpsState = [AzOpsState]::new($AzConfig)
-            $this.Initialize($NewAzOpsState)
-        }
-    }
-
-    # hidden [String] GetTypeFromId() {
-    #     return [AzOpsProviders]::GetTypeFromId($this.Id)
-    # }
-
-    # hidden [String] GetAzRestMethodPath() {
-    #     if ($this.Id -and $this.Type) {
-    #         return [AzOpsProviders]::GetAzRestMethodPath($this.Id, $this.Type)
-    #     }
-    #     elseif ($this.Id) {
-    #         return [AzOpsProviders]::GetAzRestMethodPath($this.Id)
-    #     }
-    #     else {
-    #         Write-Error "Unable to call GetAzRestMethodPath. Please ensure Id and Type (optional) values are set in [AzOpsState] object or use static method with Id and Type (optional)."
-    #         return $null
-    #     }
-    # }
-    
-    # hidden static [String] GetRestUri([String]$Id) {
-    #     return "httpes://management.azure.com" + [AzOpsProviders]::GetAzRestMethodPath($Id)
-    # }
-
-
-    # hidden [PSCustomObject[]] GetAzConfig() {
-    #     if ($this.Id) {
-    #         return [AzOpsProviders]::GetAzConfig($this.Id)
-    #     }
-    #     else {
-    #         Write-Error "Unable to run GetAzConfig. Please set a valid resource Id in the AzOpsState object, or provide as an argument."
-    #         break
-    #     }
-    # }
-
-    hidden static [PSCustomObject[]] GetAzConfig([String]$Id) {
-        $private:AzConfigJson = ([AzOpsState]::GetAzRestMethod($Id)).Content
-        if ($private:AzConfigJson | Test-Json) {
-            $private:AzConfig = $private:AzConfigJson | ConvertFrom-Json
+        if ($private:GetAzConfig.Count -eq 1) {
+            $this.Initialize($private:GetAzConfig[0])
         }
         else {
-            Write-Error "Unknown content type found in response."
+            Write-Error "Unable to update multiple items. Please update ID to specific resource instance."
             break
         }
-        if ($private:AzConfig.value.Count -gt 1) {
-            $private:AzConfigResourceCount = $private:AzConfig.value.Count
-            Write-Verbose "GetAzConfig [$Id] contains [$private:AzConfigResourceCount] resources."
-            return $private:AzConfig.Value
+    }
+
+    hidden [Void] SetDefaultProperties([PsCustomObject]$PsCustomObject) {
+        foreach ($private:Property in [AzOpsState]::DefaultProperties) {
+            $this.$private:Property = $PSCustomObject.$private:Property
         }
-        else {
-            return $private:AzConfig
+        switch -regex ($PsCustomObject.Id) {
+            # ([AzOpsState]::RegexProviderTypeFromId).ToString() { <# pending development #> }
+            # ([AzOpsState]::RegexIsResourceGroup).ToString() { <# pending development #> }
+            ([AzOpsState]::RegexIsSubscription).ToString() {
+                $this.Type = [AzOpsState]::GetTypeFromId($PsCustomObject.Id)
+                $this.Name = $PsCustomObject.displayName
+                $this.ExtendedProperties = $PsCustomObject
+            }
+            Default {
+                $this.ExtendedProperties = [PsCustomObject]@{}
+                foreach ($private:Property in $PsCustomObject.psobject.Properties) {
+                    if ($private:Property -notin [AzOpsState]::DefaultProperties) {
+                        $this.ExtendedProperties | Add-Member -NotePropertyName $private:Property.Name -NotePropertyValue $private:Property.Value
+                    }
+                }
+            }
         }
     }
 
-    # hidden [Microsoft.Azure.Commands.Profile.Models.PSHttpResponse] GetAzRestMethod() {
-    #     return [AzOpsState]::GetAzRestMethod($this.Id)
-    # }
-
     hidden [Void] SetProvider() {
-        $this.Provider = "/providers/{0}/" -f $this.Type
+        $this.Provider = ([AzOpsProviders]::SearchCache($this.Type)).Provider
     }
 
     hidden [Object[]] GetChildren() {
         switch ($this.Type) {
             "Microsoft.Management/managementGroups" {
-                $private:ApiParams = [AzOpsProviders]::GetApiParamsByType($this.Type)
-                $private:Method = "GET"
-                $private:Path = "$($this.Id)/descendants$($private:ApiParams)"
-                Write-Verbose "Rest API $($private:Method) [descendants]: $($private:Path)"
-                $private:AzRestMethod = Invoke-AzRestMethod -Path $private:Path -Method $private:Method -ErrorAction Stop
-                # Check for errors in response
-                if ($private:AzRestMethod.StatusCode -ne 200) {
-                    $private:ErrorBody = ($private:AzRestMethod.Content | ConvertFrom-Json).error
-                    Write-Error "Invalid response from API:`n StatusCode=$($private:AzRestMethod.StatusCode)`n ErrorCode=$($private:ErrorBody.code)`n ErrorMessage=$($private:ErrorBody.message)"
-                    break
-                }
-                $private:children = ($private:AzRestMethod.Content | ConvertFrom-Json).value
+                $private:children = [AzOpsState]::GetAzConfig("$($this.Id)/descendants")
+            }
+            "Microsoft.Resources/subscriptions" {
+                $private:children = [AzOpsState]::GetAzConfig("$($this.Id)/resourceGroups")
+            }
+            "Microsoft.Resources/resourceGroups" {
+                $private:children = [AzOpsState]::GetAzConfig("$($this.Id)/resources")
             }
             Default { $private:children = $null }
         }
@@ -599,6 +567,9 @@ class AzOpsState {
             ([AzOpsState]::RegexProviderTypeFromId).ToString() {
                 $private:TypeFromId = [AzOpsState]::RegexProviderTypeFromId.Match($Id).Value
             }
+            ([AzOpsState]::RegexIsResource).ToString() {
+                $private:TypeFromId = "Microsoft.Resources/resources"
+            }
             ([AzOpsState]::RegexIsResourceGroup).ToString() {
                 $private:TypeFromId = "Microsoft.Resources/resourceGroups"
             }
@@ -630,7 +601,7 @@ class AzOpsState {
         return [AzOpsState]::GetAzRestMethodPath($Id, $private:Type)
     }
 
-    # Static method to run simplify running Invoke-AzRestMethod using provided Id only
+    # Static method to simplify running Invoke-AzRestMethod using provided Id only
     # Relies on the following additional static methods:
     #  -- [AzOpsState]::GetAzRestMethodPath(Id)
     #    |-- [AzOpsState]::GetTypeFromId(Id)
@@ -646,19 +617,47 @@ class AzOpsState {
         return $private:PSHttpResponse
     }
 
+    # Static method to return Resource configuration from Azure using provided Id to modify scope
+    # Will return multiple items for IDs scoped at a Resource Type level (e.g. "/subscriptions")
+    # Will return a single item for IDs scoped at a Resource level (e.g. "/subscriptions/{subscription_id}")
+    # Relies on the following additional static methods:
+    #  -- [AzOpsState]::GetAzRestMethod(Id)
+    #    |-- [AzOpsState]::GetAzRestMethodPath(Id)
+    #       |-- [AzOpsState]::GetTypeFromId(Id)
+    #          |-- [AzOpsState]::GetAzRestMethodPath(Id, Type)
+    #             |-- [AzOpsProviders]::GetApiParamsByType(Id, Type)
+    hidden static [PSCustomObject[]] GetAzConfig([String]$Id) {
+        $private:AzConfigJson = ([AzOpsState]::GetAzRestMethod($Id)).Content
+        if ($private:AzConfigJson | Test-Json) {
+            $private:AzConfig = $private:AzConfigJson | ConvertFrom-Json
+        }
+        else {
+            Write-Error "Unknown content type found in response."
+            break
+        }
+        if ($private:AzConfig.value.Count -gt 1) {
+            $private:AzConfigResourceCount = $private:AzConfig.value.Count
+            Write-Verbose "GetAzConfig [$Id] contains [$private:AzConfigResourceCount] resources."
+            return $private:AzConfig.Value
+        }
+        else {
+            return $private:AzConfig
+        }
+    }
+
     # Static method to show all entries in Cache
     static [AzOpsState[]] ShowCache() {
         return [AzOpsState]::Cache
     }
 
     # Static method to show all entries in Cache matching the specified resource Id
-    static [AzOpsState[]] ShowCache([String]$Id) {
+    static [AzOpsState[]] SearchCache([String]$Id) {
         return [AzOpsState]::Cache | Where-Object -Property Id -EQ $Id
     }
 
     # Static method to return [Boolean] for Resource in Cache query
     static [Boolean] InCache([String]$Id) {
-        if ([AzOpsState]::ShowCache([String]$Id)) {
+        if ([AzOpsState]::SearchCache([String]$Id)) {
             return $true
         }
         else {
