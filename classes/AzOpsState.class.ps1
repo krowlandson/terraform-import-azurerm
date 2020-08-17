@@ -185,16 +185,14 @@ class AzOpsState {
     [String]$Name
     [Object]$Properties
     [Object]$ExtendedProperties
-    # [String]$Location
-    # [String]$Tags
-    # [Object]$Raw
     [String]$Provider
-    [Object[]]$Children
-    [Object[]]$LinkedResources
+    [String[]]$Children
+    [String[]]$LinkedResources
     [String]$Parent
-    [Object[]]$Parents
+    [String[]]$Parents
     [String]$ParentPath
     [String]$ResourcePath
+    [AzOpsState[]]$State
 
     # Static properties
     static [AzOpsState[]]$Cache
@@ -210,6 +208,8 @@ class AzOpsState {
     hidden static [Regex]$RegexIsSubscription = "(?i)(\/subscriptions)(?!\/.*\/)"
     hidden static [Regex]$RegexIsResourceGroup = "(?i)(\/resourceGroups)(?!\/.*\/)"
     hidden static [Regex]$RegexIsResource = "(?i)(\/resources)(?!\/.*\/)"
+    hidden static [Regex]$RegexExtractSubscriptionId = "(?i)^(\/subscriptions\/)[^\/]{36}((?![^\/])|$)"
+    hidden static [Regex]$RegexExtractResourceGroupId = "(?i)^(\/subscriptions\/)[^\/]{36}(\/resourceGroups\/)[^\/]+((?![^\/])|$)"
 
     hidden [PSCustomObject]$SupportedProviders = @{
         GetChildrenByType = @(
@@ -387,15 +387,16 @@ class AzOpsState {
         $private:GetChildren = $this.GetChildren()
         switch ($this.Type) {
             "Microsoft.Management/managementGroups" {
-                $private:GetChildrenFiltered = $private:GetChildren | Where-Object { $_.properties.parent.id -EQ $this.Id }
-                $this.Children = $private:GetChildrenFiltered
-                $this.LinkedResources = $private:GetChildren
-                $this.GetChildrenByType("Microsoft.Authorization/policyDefinitions")
-                $this.GetChildrenByType("Microsoft.Authorization/policySetDefinitions")
-                $this.GetChildrenByType("Microsoft.Authorization/policyAssignments")
+                # $private:GetChildrenFiltered = $private:GetChildren | Where-Object { $_.properties.parent.id -EQ $this.Id }
+                # $this.Children = $private:GetChildrenFiltered
+                $this.Children = ($private:GetChildren | Where-Object { $_.properties.parent.id -EQ $this.Id }).Id
+                $this.LinkedResources = ($private:GetChildren | Where-Object { $_.properties.parent.id -NE $this.Id }).Id
+                # $this.GetChildrenByType("Microsoft.Authorization/policyDefinitions")
+                # $this.GetChildrenByType("Microsoft.Authorization/policySetDefinitions")
+                # $this.GetChildrenByType("Microsoft.Authorization/policyAssignments")
             }
             Default {
-                $this.Children = $private:GetChildren
+                $this.Children = ($private:GetChildren).Id
                 $this.LinkedResources = $null
             }
         }
@@ -405,8 +406,19 @@ class AzOpsState {
     # Different resource types use different methods to determine the parent
     hidden [String] GetParent() {
         switch ($this.Type) {
-            "Microsoft.Management/managementGroups" { $private:parent = $this.Properties.details.parent.id }
-            Default { $private:parent = $null }
+            "Microsoft.Management/managementGroups" {
+                $private:parent = $this.Properties.details.parent.id
+            }
+            "Microsoft.Resources/subscriptions" {
+                $private:searchCache = ([AzOpsState]::Cache).Children | Where-Object -Property id -EQ "$($this.Id)"
+                $private:parent = $private:searchCache.properties.parent.id
+            }
+            "Microsoft.Resources/resourceGroups" {
+                $private:parent = [AzOpsState]::RegexExtractSubscriptionId.Match($this.Id).value
+            }
+            Default {
+                $private:parent = [AzOpsState]::RegexExtractResourceGroupId.Match($this.Id).value
+            }
         }
         return $private:parent
     }
