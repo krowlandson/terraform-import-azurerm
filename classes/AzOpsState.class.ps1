@@ -410,8 +410,9 @@ class AzOpsState {
                 $private:parent = $this.Properties.details.parent.id
             }
             "Microsoft.Resources/subscriptions" {
-                $private:searchCache = ([AzOpsState]::Cache).Children | Where-Object -Property id -EQ "$($this.Id)"
-                $private:parent = $private:searchCache.properties.parent.id
+                $private:managementGroups = [AzOpsState]::FromScope("/providers/Microsoft.Management/managementGroups")
+                $private:searchParent = $private:managementGroups | Where-Object -Property Children -Contains "$($this.Id)"
+                $private:parent = $private:searchParent.Id
             }
             "Microsoft.Resources/resourceGroups" {
                 $private:parent = [AzOpsState]::RegexExtractSubscriptionId.Match($this.Id).value
@@ -655,6 +656,16 @@ class AzOpsState {
         else {
             return $private:AzConfig
         }
+    }
+
+    # Static method to support returning multiple AzOpsState objects from defined scope
+    static [AzOpsState[]] FromScope([String]$Scope) {
+        $private:FromScope = @()
+        $private:AzConfigAtScope = [AzOpsState]::GetAzConfig($Scope)
+        foreach ($private:Config in $private:AzConfigAtScope) {
+            $private:FromScope += [AzOpsState]::new($private:Config.Id)
+        }
+        return $private:FromScope
     }
 
     # Static method to show all entries in Cache
